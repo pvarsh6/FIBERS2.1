@@ -10,7 +10,6 @@ import matplotlib.patches as mpatches
 import collections
 from matplotlib.colors import LinearSegmentedColormap
 
-
 def transform_value(n,cycle_length):
     remainder = n % (2 * cycle_length)
     if remainder > cycle_length:
@@ -18,45 +17,68 @@ def transform_value(n,cycle_length):
     return remainder
 
 
-def plot_pareto(bin_pop,show=True,save=False,output_folder=None,data_name=None):
+def plot_pareto(bin_pop, show=True, save=False, output_folder=None, data_name=None):
     # Initialize lists to store Pareto-optimal solutions
     pareto_pre_fitness = []
     pareto_bin_size = []
     group_strata_prop = []
     group_threshold = []
+    shapes = []
+    sizes = []
 
     for bin in bin_pop:
         pareto_pre_fitness.append(bin.pre_fitness)
         pareto_bin_size.append(bin.bin_size)
         group_strata_prop.append(bin.group_strata_prop)
-        group_threshold.append(bin.group_threshold)
-    group_threshold = [(x+1)*5 for x in group_threshold]
-    pareto_df = pd.DataFrame({'Pre-Fitness': pareto_pre_fitness, 'Bin Size': pareto_bin_size})
+        
+        # Calculate average threshold and determine shape
+        if len(bin.group_threshold_list) == 1:  # 2-group bin
+            avg_threshold = bin.group_threshold_list[0]
+            shapes.append('o')  # Circle for 2-group bins
+        else:  # 3-group bin
+            avg_threshold = sum(bin.group_threshold_list) / len(bin.group_threshold_list)
+            shapes.append('s')  # Square for 3-group bins
+        
+        sizes.append((avg_threshold + 1) * 5)  # Adjust size based on average threshold
+        group_threshold.append(avg_threshold)
+    
+    pareto_df = pd.DataFrame({
+        'Pre-Fitness': pareto_pre_fitness,
+        'Bin Size': pareto_bin_size,
+        'Shape': shapes,
+        'Size': sizes,
+        'Group Strata Prop': group_strata_prop
+    })
 
-    mask = paretoset(pareto_df,sense=["max","min"])
+    mask = paretoset(pareto_df[['Pre-Fitness', 'Bin Size']], sense=["max", "min"])
     paretoset_fibers = pareto_df[mask]
 
-    plt.figure(figsize=(5, 5))
-    plt.scatter(pareto_df["Pre-Fitness"], pareto_df["Bin Size"], zorder=10, label="All Bins", alpha=0.8,c=group_strata_prop, cmap='viridis', s=group_threshold)
-    plt.legend()
+    plt.figure(figsize=(6, 6))
+
+    # Plot all bins with different shapes
+    for shape in pareto_df['Shape'].unique():
+        df_shape = pareto_df[pareto_df['Shape'] == shape]
+        plt.scatter(df_shape['Pre-Fitness'], df_shape['Bin Size'], label=f'All Bins ({shape})', 
+                    alpha=0.8, c=df_shape['Group Strata Prop'], cmap='viridis', 
+                    s=df_shape['Size'], marker=shape)
+
+    # Highlight non-dominated bins
+    for shape in paretoset_fibers['Shape'].unique():
+        df_shape = paretoset_fibers[paretoset_fibers['Shape'] == shape]
+        plt.scatter(df_shape['Pre-Fitness'], df_shape['Bin Size'], label=f'Non-Dominated ({shape})',
+                    s=df_shape['Size'], marker=shape, edgecolor='orange', linewidth=1.5, facecolor='none')
+
     plt.xlabel("Pre-Fitness")
     plt.ylabel("Bin Size")
     plt.colorbar(label='Group Strata Prop.')  # Add colorbar to show the intensity scale
-    plt.scatter(
-        paretoset_fibers["Pre-Fitness"],
-        paretoset_fibers["Bin Size"],
-        zorder=5,
-        c='orange',
-        label="Non-Dominated",
-        s=150,
-        alpha=1,
-    )
     plt.grid(True, alpha=0.5, ls="--", zorder=0)
     plt.tight_layout()
+
     if save:
-        plt.savefig(output_folder+'/'+'Pop_Pareto_'+data_name+'.png', bbox_inches="tight")
+        plt.savefig(output_folder + '/' + data_name + '_pop_pareto.png', bbox_inches="tight")
     if show:
         plt.show()
+
 
 
 def plot_feature_tracking(feature_names,feature_tracking,max_features=40,show=True,save=False,output_folder=None,data_name=None): 
@@ -77,25 +99,40 @@ def plot_feature_tracking(feature_names,feature_tracking,max_features=40,show=Tr
     plt.ylabel('Feature Tracking Score')
     plt.xticks(rotation=90)
     if save:
-        plt.savefig(output_folder+'/'+'Feature_Tracking_'+data_name+'.png', bbox_inches="tight")
+        plt.savefig(output_folder+'/'+data_name+'_feature_tracking.png', bbox_inches="tight")
     if show:
         plt.show()
 
 
-def plot_kaplan_meir(low_outcome,low_censor,high_outcome, high_censor,show=True,save=False,output_folder=None,data_name=None):
+def plot_kaplan_meir(low_outcome,low_censor,mid_outcome, mid_censor,high_outcome, high_censor,show=True,save=False,output_folder=None,data_name=None):
     kmf1 = KaplanMeierFitter()
 
-    # fit the model for 1st cohort
-    kmf1.fit(low_outcome, low_censor, label='At/Below Bin Threshold')
-    a1 = kmf1.plot_survival_function()
-    a1.set_ylabel('Survival Probability')
+    if mid_outcome is not None: # bin has 3 groups
+        # fit the model for 1st cohort
+        kmf1.fit(low_outcome, low_censor, label='At/Below Bin Low Threshold')
+        a1 = kmf1.plot_survival_function()
 
-    # fit the model for 2nd cohort
-    kmf1.fit(high_outcome, high_censor, label='Above Bin Threshold')
-    kmf1.plot_survival_function(ax=a1)
+        # fit the model for 2nd cohort
+        kmf1.fit(mid_outcome, mid_censor, label = 'Between Bin Thresholds')
+        kmf1.plot_survival_function()
+
+        # fit the model for 3rd cohort
+        kmf1.fit(high_outcome, high_censor, label='Above Bin High Threshold')
+        kmf1.plot_survival_function(ax=a1)
+    else: # bin has 2 groups
+        # fit the model for 1st cohort
+        kmf1.fit(low_outcome, low_censor, label='At/Below Bin Threshold')
+        a1 = kmf1.plot_survival_function()
+
+        # fit the model for 2nd cohort
+        kmf1.fit(high_outcome, high_censor, label='Above Bin Threshold')
+        kmf1.plot_survival_function(ax=a1)
+    
+    a1.set_ylabel('Survival Probability')
     a1.set_xlabel('Time After Event')
+
     if save:
-        plt.savefig(output_folder+'/'+'KM_'+data_name+'.png', bbox_inches="tight")
+        plt.savefig(output_folder+'/'+data_name+'_km.png', bbox_inches="tight")
     if show:
         plt.show()
 
@@ -118,7 +155,7 @@ def plot_fitness_progress(perform_track_df,show=True,save=False,output_folder=No
     # Show the plot
     plt.grid(True)
     if save:
-        plt.savefig(output_folder+'/'+'Fitness_Track_'+data_name+'.png', bbox_inches="tight")
+        plt.savefig(output_folder+'/'+data_name+'_fitness_track.png', bbox_inches="tight")
     if show:
         plt.show()
 
@@ -126,22 +163,36 @@ def plot_fitness_progress(perform_track_df,show=True,save=False,output_folder=No
 def plot_threshold_progress(perform_track_df,show=True,save=False,output_folder=None,data_name=None):
     # Extract columns for plotting
     time = perform_track_df['Iteration']
-    df = perform_track_df[['Threshold']]
+    thresholds = perform_track_df['Threshold(s)']
+    
+    # Initialize lists to hold low and high thresholds
+    df_l = []
+    df_h = []
 
+    for th_list in thresholds:
+        if len(th_list) > 0:
+            df_l.append(th_list[0])
+            if len(th_list) > 1:
+                df_h.append(th_list[1])
+            else:
+                df_h.append(None)  # Fill with None if only one threshold exists
+    
     # Plot the data
     plt.figure(figsize=(5, 3))
-    colors = ['blue']  # Manually set colors
-    for i, column in enumerate(df.columns):
-        plt.plot(time, df[column], label=column, color=colors[i])
+    plt.plot(time, df_l, label='Low Threshold', color='blue')
+    if any(df_h):  # Check if there's at least one high threshold to plot
+        plt.plot(time, df_h, label='High Threshold', color='red')
 
     # Add labels and title
     plt.xlabel('Iteration')
-    plt.ylabel('Threshold (Top Bin)')
+    plt.ylabel('Thresholds (Top Bin)')
+    plt.title('Threshold Progress Over Time')
+    plt.legend()
 
     # Show the plot
     plt.grid(True)
     if save:
-        plt.savefig(output_folder+'/'+'Threshold_Track_'+data_name+'.png', bbox_inches="tight")
+        plt.savefig(output_folder+'/'+data_name+'_threshold_track.png', bbox_inches="tight")
     if show:
         plt.show()
 
@@ -163,7 +214,7 @@ def plot_perform_progress(perform_track_df,show=True,save=False,output_folder=No
     # Show the plot
     plt.grid(True)
     if save:
-        plt.savefig(output_folder+'/'+'Pre-Fitness_Track_'+data_name+'.png', bbox_inches="tight")
+        plt.savefig(output_folder+'/'+data_name+'_pre-fitness_track.png', bbox_inches="tight")
     if show:
         plt.show()
 
@@ -187,7 +238,7 @@ def plot_misc_progress(perform_track_df,show=True,save=False,output_folder=None,
     # Show the plot
     plt.grid(True)
     if save:
-        plt.savefig(output_folder+'/'+'Misc_Track_'+data_name+'.png', bbox_inches="tight")
+        plt.savefig(output_folder+'/'+data_name+'_misc_track.png', bbox_inches="tight")
     if show:
         plt.show()
 
@@ -202,7 +253,7 @@ def plot_residuals_histogram(residuals,show=True,save=False,output_folder=None,d
         plt.ylabel('Frequency')
         plt.title('Histogram of Cox PH Model Residuals')
         if save:
-            plt.savefig(output_folder+'/'+'Residuals_Histogram_'+data_name+'.png', bbox_inches="tight")
+            plt.savefig(output_folder+'/'+data_name+'_residuals_histogram.png', bbox_inches="tight")
         if show:
             plt.show()
     else:
@@ -237,7 +288,7 @@ def plot_log_rank_residuals(residuals,bin_pop,show=True,save=False,output_folder
         # Add correlation coefficient to the plot
         plt.text(0.53, 0.02, f'Correlation coeff. = {r_value:.2f}', transform=plt.gca().transAxes)
         if save:
-            plt.savefig(output_folder+'/'+'Log_Rank_Residuals_'+data_name+'.png', bbox_inches="tight")
+            plt.savefig(output_folder+'/'+data_name+'_log_rank_residuals.png', bbox_inches="tight")
         if show:
             plt.show()
         # Calculate and print correlation
@@ -273,7 +324,7 @@ def plot_adj_HR_residuals(residuals,bin_pop,show=True,save=False,output_folder=N
         # Add correlation coefficient to the plot
         plt.text(0.53, 0.02, f'Correlation coeff. = {r_value:.2f}', transform=plt.gca().transAxes)
         if save:
-            plt.savefig(output_folder+'/'+'Adj_HR_Residuals_'+data_name+'.png', bbox_inches="tight")
+            plt.savefig(output_folder+'/'+data_name+'_adj_hr_residuals.png', bbox_inches="tight")
         if show:
             plt.show()
     else:
@@ -307,7 +358,7 @@ def plot_log_rank_adj_HR(bin_pop,show=True,save=False,output_folder=None,data_na
     # Add correlation coefficient to the plot
     plt.text(0.53, 0.02, f'Correlation coeff. = {r_value:.2f}', transform=plt.gca().transAxes)
     if save:
-        plt.savefig(output_folder+'/'+'Log_Rank_Adj_HR_'+data_name+'.png', bbox_inches="tight")
+        plt.savefig(output_folder+'/'+data_name+'_log_rank_adj_hr.png', bbox_inches="tight")
     if show:
         plt.show()
 
@@ -340,7 +391,7 @@ def plot_adj_HR_metric_product(residuals,bin_pop,show=True,save=False,output_fol
         # Add correlation coefficient to the plot
         plt.text(0.53, 0.02, f'Correlation coeff. = {r_value:.2f}', transform=plt.gca().transAxes)
         if save:
-            plt.savefig(output_folder+'/'+'Metric_Product_Adj_HR_'+data_name+'.png', bbox_inches="tight")
+            plt.savefig(output_folder+'/'+data_name+'_metric_product_adj_hr.png', bbox_inches="tight")
         if show:
             plt.show()
 
@@ -363,70 +414,91 @@ def match_prefix(feature, locust_names):
     return "None"
 
 
-def plot_bin_population_heatmap(population, feature_names,show=True,save=False,output_folder=None,data_name=None):
+def plot_bin_population_heatmap(population, feature_names,filtering=None,show=True,save=False,output_folder=None,data_name=None):
     """
     :param population: a list where each element is a list of specified features
     :param feature_list: an alphabetically sorted list containing each of the possible feature
     """
-    
+    fontsize = 20
+    feature_count = len(feature_names)
     bin_names = []
     for i in range(len(population)):
         bin_names.append("Bin " + str(i + 1))
 
     feature_index_map = {}
-    for i in range(len(feature_names)):
+    for i in range(feature_count):
         feature_index_map[feature_names[i]] = i #create feature to index mapping
 
     graph_df = []
     for bin in population:
-        temp_arr = [0] * len(feature_names)
+        temp_arr = [0] * feature_count
         for feature in bin:
             temp_arr[feature_index_map[feature]] = 1
         graph_df.append(temp_arr)
 
     graph_df = pd.DataFrame(graph_df, bin_names, feature_names)
 
+    if filtering != None:
+        tdf = graph_df
+        tdf = pd.DataFrame(tdf.sum(axis=0), columns=['Count']).sort_values('Count', ascending=False)
+        tdf = tdf[tdf['Count'] >= filtering]
+        graph_df = graph_df[list(tdf.index)]
+        feature_count = len(graph_df.columns)
+        print(feature_count)
+
     num_bins = len(population) 
     max_bins = 100
     max_features = 100
     # iterate through df columns and adjust values as necessary
     if num_bins > max_bins:  #
-        if len(feature_names) > max_features: #over max bins and max features - fixed plot with no labels
+        if feature_count > max_features: #over max bins and max features - fixed plot with no labels
             fig_size = (max_features // 2, max_bins // 2)
             # Create a heatmap using Seaborn
             plt.subplots(figsize=fig_size)
-            sns.heatmap(graph_df, xticklabels=False, yticklabels=False, vmax=1, vmin=0,
+            ax=sns.heatmap(graph_df, xticklabels=False, yticklabels=False, vmax=1, vmin=0,
                         square=True, cmap="Blues", cbar_kws={"shrink": .75}, cbar=False)
+            ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
         else: #Over max bins, but under max features
-            fig_size = (len(feature_names)// 2, max_bins  // 2)
+            fig_size = (feature_count// 2, max_bins  // 2)
             # Create a heatmap using Seaborn
             plt.subplots(figsize=fig_size)
-            sns.heatmap(graph_df, yticklabels=False, vmax=1, vmin=0,
+            ax=sns.heatmap(graph_df, yticklabels=False, vmax=1, vmin=0,
                         square=True, cmap="Blues", cbar_kws={"shrink": .75}, cbar=False)
+            ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
     else:
-        if len(feature_names) > max_features: #under max bins but over max features 
+        if feature_count > max_features: #under max bins but over max features 
             fig_size = (max_features // 2, num_bins // 2)
             # Create a heatmap using Seaborn
             plt.subplots(figsize=fig_size)
-            sns.heatmap(graph_df, xticklabels=False, vmax=1, vmin=0, square=True, cmap="Blues",
+            ax=sns.heatmap(graph_df, xticklabels=False, vmax=1, vmin=0, square=True, cmap="Blues",
                         cbar_kws={"shrink": .75}, cbar=False)
+            ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
         else:
-            fig_size = (num_bins // 2, num_bins // 2)
+            fig_size = (feature_count// 2 , num_bins // 2)
             # Create a heatmap using Seaborn
             plt.subplots(figsize=fig_size)
-            sns.heatmap(graph_df, vmax=1, vmin=0, square=True, cmap="Blues",
+            ax=sns.heatmap(graph_df, vmax=1, vmin=0, square=True, cmap="Blues",
                         cbar_kws={"shrink": .75}, cbar=False)
-            
+            ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
+
+    plt.xticks(fontsize=fontsize)
+    plt.yticks(fontsize=fontsize)
     legend_elements = [mpatches.Patch(color='aliceblue', label='Not in Bin'),
                         mpatches.Patch(color='darkblue', label='Included in Bin')]
-    plt.legend(handles=legend_elements, loc='center left', bbox_to_anchor=(1, 0.5))
-    plt.xlabel('Dataset Features')
-    plt.ylabel('Bin Population')
+    plt.legend(handles=legend_elements, loc='center left', bbox_to_anchor=(1, 0.5),fontsize=fontsize)
+    plt.xlabel('Features',fontsize=fontsize)
+    plt.ylabel('Bin Population',fontsize=fontsize)
 
     if save:
-        plt.savefig(output_folder+'/'+'Basic_Pop_Heatmap_'+data_name+'.png', bbox_inches="tight")
+        plt.savefig(output_folder+'/'+data_name+'_basic_pop_heatmap.png', bbox_inches="tight")
     if show:
         plt.show()
+
+    return graph_df
 
 
 def match_prefix(feature, group_names):
@@ -441,7 +513,7 @@ def match_prefix(feature, group_names):
     return "None"
 
 
-def plot_custom_bin_population_heatmap(population, feature_names,group_names,legend_group_info,color_features,colors,default_colors,max_bins,max_features,show=True,save=False,output_folder=None,data_name=None):
+def plot_custom_bin_population_heatmap(population,feature_names,group_names,legend_group_info,colors,max_bins,max_features,show=True,save=False,output_folder=None,data_name=None):
     """
     :param population: a list where each element is a list of specified features
     :param feature_list: an alphabetically sorted list containing each of the possible feature
@@ -453,50 +525,84 @@ def plot_custom_bin_population_heatmap(population, feature_names,group_names,leg
     :param max_bins: maximum number of bins in a population before the heatmap no longer prints these bin name lables on the y-axis
     :param max_features: maximum number of features in the dataset befor the heatmap no longer prints these feature name lables on the x-axis
     """
-    # preprocessing of feature_list
-    group_size_counter = collections.defaultdict(int)
-    for feature in feature_names:
-        p = match_prefix(feature, group_names)
-        group_size_counter[p] += 1
-
-    group_counter_sorted = []
-    for name in group_names:
-        group_counter_sorted.append((name,group_size_counter[name]))
-
-    bin_names = []
-    for i in range(len(population)):
-        bin_names.append("Bin " + str(i + 1))
-
+    fontsize = 20
+    #Prepare bin population dataset
     feature_index_map = {}
     for i in range(len(feature_names)):
-        feature_index_map[feature_names[i]] = i #create feature to index mapping
+        feature_index_map[feature_names[i]] = i #create feature to featuer position index mapping
 
-    for each in colors: #Add custom colors to color set - order matters
-        default_colors.append(each)
-    custom_cmap = LinearSegmentedColormap.from_list('custom_cmap', default_colors, N=256)
-
-    index_dict = {}
-    count = 2
-    for colorset in color_features:
-        for feature in colorset:
-            index_dict[feature] = count
-        count += 1
-
-    graph_df = []
+    graph_df = [] #create dataset of bin values
     for bin in population:
         temp_arr = [0] * len(feature_names)
         for feature in bin:
             temp_arr[feature_index_map[feature]] = 1
         graph_df.append(temp_arr)
 
-    graph_df = pd.DataFrame(graph_df, bin_names, feature_names)
+    # Define bin names for plot
+    bin_names = []
+    for i in range(len(population)):
+        bin_names.append("Bin " + str(i + 1))
 
-    for col in graph_df.columns: #for each feature
-        if col in index_dict:
-            for i in range(len(graph_df[col])):
-                if graph_df[col][i] == 1:
-                    graph_df[col][i] = index_dict[col]
+    graph_df = pd.DataFrame(graph_df, bin_names, feature_names) #data, index, columns
+
+    #Re order dataframe based on specified group names
+    prefix_columns = {prefix: [col for col in graph_df.columns if col.startswith(prefix)] for prefix in group_names} # Get the columns starting with each prefix
+    ordered_columns = sum(prefix_columns.values(), []) # Concatenate the columns lists in the desired order
+    graph_df = graph_df[ordered_columns] # Reorder the DataFrame columns
+
+    #Prepare for group lines in the figure
+    group_size_counter =  group_size_counter = collections.defaultdict(int)
+
+    group_list = [[] for _ in range(len(group_names))] #list of feature lists by group
+    for feature in feature_names:
+        p = match_prefix(feature, group_names)
+        group_size_counter[p] += 1
+        index = group_names.index(p)
+        group_list[index].append(feature) 
+
+    group_counter_sorted = []
+    for name in group_names:
+        group_counter_sorted.append((name,group_size_counter[name]))
+
+    #Define color lists
+    index_dict = {}
+    count = 1
+    for group in group_list:
+        for feature in group:
+            index_dict[feature] = count
+        count += 1
+
+    for feature in graph_df.columns: #for each feature
+        if feature in index_dict:
+            for i in range(len(graph_df[feature])):
+                if graph_df[feature][i] == 1:
+                    graph_df[feature][i] = index_dict[feature]
     num_bins = len(population) #tmp
+
+    #Identify if one group is not represented (to readjust colors used in colormap)
+    code = 1 #starts with specified features
+    remove_colors = []
+    for group in group_names:
+        count = (graph_df == code).sum().sum()
+        if count == 0:
+            remove_colors.append(colors[code])
+        code += 1
+
+    applied_colors = [x for x in colors if x not in remove_colors]
+
+    #Redo dataframe encoding
+    code = 1
+    if applied_colors != colors: #redo value encoding
+        for i in range(0,len(group_names)):
+            count = (graph_df == code).sum().sum()
+            if count == 0:
+                graph_df = graph_df.applymap(lambda x: x - 1 if x > code else x)
+            else:
+                code +=1
+
+    #Prepare color mapping
+    custom_cmap = LinearSegmentedColormap.from_list('custom_cmap', applied_colors, N=len(applied_colors))
+    #custom_cmap = ListedColormap.from_list('custom_cmap', colors, N=256)
 
     # iterate through df columns and adjust values as necessary
     if num_bins > max_bins:  #
@@ -506,12 +612,16 @@ def plot_custom_bin_population_heatmap(population, feature_names,group_names,leg
             plt.subplots(figsize=fig_size)
             ax=sns.heatmap(graph_df, xticklabels=False, yticklabels=False,
                         square=True, cmap=custom_cmap, cbar_kws={"shrink": .75}, cbar=False)
+            ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
         else: #Over max bins, but under max features
             fig_size = (len(feature_names)// 2, max_bins  // 2)
             # Create a heatmap using Seaborn
             plt.subplots(figsize=fig_size)
             ax=sns.heatmap(graph_df, yticklabels=False,
                         square=True, cmap=custom_cmap, cbar_kws={"shrink": .75}, cbar=False)
+            ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
     else:
         if len(feature_names) > max_features: #under max bins but over max features 
             fig_size = (max_features // 2, num_bins // 2)
@@ -519,30 +629,36 @@ def plot_custom_bin_population_heatmap(population, feature_names,group_names,leg
             plt.subplots(figsize=fig_size)
             ax=sns.heatmap(graph_df, xticklabels=False, square=True, cmap=custom_cmap,
                         cbar_kws={"shrink": .75}, cbar=False)
+            ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
         else:
-            fig_size = (num_bins // 2, num_bins // 2)
+            fig_size = (len(feature_names)// 2, num_bins // 2)
             # Create a heatmap using Seaborn
             plt.subplots(figsize=fig_size)
             ax=sns.heatmap(graph_df, square=True, cmap=custom_cmap,
                         cbar_kws={"shrink": .75}, cbar=False)
+            ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
 
     legend_elements = []
     index = 0
-    for color in default_colors:
+    for color in colors:
         legend_elements.append(mpatches.Patch(color=color,label=legend_group_info[index]))
         index += 1
 
-    plt.legend(handles=legend_elements, loc='center left', bbox_to_anchor=(1, 0.5))
+    plt.xticks(fontsize=fontsize)
+    plt.yticks(fontsize=fontsize)
+    plt.legend(handles=legend_elements, loc='center left', bbox_to_anchor=(1, 0.5),fontsize=fontsize)
 
     running_count = 0
     for name, count in group_counter_sorted:
         running_count += count
         ax.vlines(running_count, colors="Black", *ax.get_ylim())
 
-    plt.xlabel('Features')
-    plt.ylabel('Bin Population')
+    plt.xlabel('Features',fontsize=fontsize)
+    plt.ylabel('Bin Population',fontsize=fontsize)
 
     if save:
-        plt.savefig(output_folder+'/'+'Basic_Pop_Heatmap_'+data_name+'.png', bbox_inches="tight")
+        plt.savefig(output_folder+'/'+data_name+'_custom_pop_heatmap.png', bbox_inches="tight")
     if show:
         plt.show()
