@@ -1,3 +1,4 @@
+from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
 import random
@@ -27,8 +28,8 @@ from tqdm import tqdm
 class FIBERS(BaseEstimator, TransformerMixin):
     def __init__(self, outcome_label="Duration",outcome_type="survival",iterations=100,pop_size=50,tournament_prop=0.2,crossover_prob=0.5,min_mutation_prob=0.1, 
                  max_mutation_prob=0.5,merge_prob=0.1,new_gen=1.0,elitism=0.1,diversity_pressure=0,min_bin_size=1,max_bin_size=None,max_bin_init_size=10,fitness_metric="log_rank", 
-                 log_rank_weighting=None,censor_label="Censoring",group_strata_min=0.2,penalty=0.5,group_thresh_list = [1,4],min_thresh=0,max_thresh=5, 
-                 int_thresh=True,thresh_evolve_prob=0.5,multi_thresholding = True,manual_bin_init=None,covariates=None,pop_clean=None,report=None,random_seed=None,verbose=False):
+                 log_rank_weighting=None, sharing_penalization=None,censor_label="Censoring",group_strata_min=0.2,penalty=0.5,group_thresh=0,min_thresh=0,max_thresh=5, 
+                 int_thresh=True,thresh_evolve_prob=0.5,manual_bin_init=None,covariates=None,naive_survival_optimization=True, pop_clean=None,report=None,random_seed=None,verbose=False):
 
         """
         A Scikit-Learn compatible implementation of the FIBERS Algorithm.
@@ -69,8 +70,7 @@ class FIBERS(BaseEstimator, TransformerMixin):
         :param max_thresh: for adaptive bin thresholding - the maximum group_thresh allowed
         :param int_thresh: boolean indicating that adaptive bin thresholds are limited to positive intergers
         :param thresh_evolve_prob: probability that adaptive bin thresholding will evolve vs. be selected for the bin deterministically
-        :param multi_thresholding: for multi_risk group survival analysis; if true, FIBERS will evaluate 2-group and 3-group bins simultaneously
-        
+
         ..
             Manual Bin Initialization Parameters
 
@@ -85,6 +85,7 @@ class FIBERS(BaseEstimator, TransformerMixin):
             Other Parameters
 
         :param pop_clean: optional bin population cleanup phase
+        :param naive_survival_optimization: optional param to optimize low risk group survivability (naive approach)
         :param report: list of integers, indicating iterations where the population will be printed out for viewing
         :param random_seed: the seed value needed to generate a random number
         :param verbose: Boolean flag to run in 'verbose' mode - display run details
@@ -135,8 +136,8 @@ class FIBERS(BaseEstimator, TransformerMixin):
         if not self.check_is_int(max_bin_init_size) or max_bin_init_size < 0:
             raise Exception("'max_bin_init_size' param must be non-negative integer (and no larger then the number of features in the dataset)")
 
-        if fitness_metric!="log_rank" and fitness_metric!="residuals" and fitness_metric!="log_rank_residuals":
-            raise Exception("'fitness_metric' param can only have values of 'log_rank', 'residuals', or 'log_rank_residuals'")
+        if fitness_metric!="log_rank" and fitness_metric!="residuals" and fitness_metric!="log_rank_residuals" and fitness_metric!="pareto":
+            raise Exception("'fitness_metric' param can only have values of 'log_rank', 'residuals','log_rank_residuals', or 'pareto'")
         
         if log_rank_weighting!="wilcoxon" and log_rank_weighting!="tarone-ware" and log_rank_weighting!="peto" and log_rank_weighting!='fleming-harrington'and log_rank_weighting != None:
             raise Exception("'log_rank_weighting' param can only have values of 'wilcoxon', 'tarone-wares', 'peto' or 'fleming-harrington'")
@@ -156,10 +157,9 @@ class FIBERS(BaseEstimator, TransformerMixin):
         if penalty < 0 or penalty > 1:
             raise Exception("'penalty' param must be an int or float from 0 - 1")
 
-        if group_thresh_list is not None and ((not self.check_is_int(group_thresh_list[0]) and not self.check_is_float(group_thresh_list[0])) or 
-            (not self.check_is_int(group_thresh_list[1]) and not self.check_is_float(group_thresh_list[1]))):
+        if not self.check_is_int(group_thresh) and not self.check_is_float(group_thresh) and group_thresh != None:
             raise Exception("'group_thresh' param must be a non-negative int or float, or None, for adaptive thresholding")
-        if group_thresh_list is not None and (group_thresh_list[0] < 0 or group_thresh_list[1] < 0): 
+        if group_thresh != None and group_thresh < 0: 
             raise Exception("'group_thresh' param must be a non-negative int or float, or None, for adaptive thresholding")
         
         if not self.check_is_int(min_thresh) and not self.check_is_float(min_thresh) or min_thresh < 0:
@@ -177,9 +177,6 @@ class FIBERS(BaseEstimator, TransformerMixin):
             raise Exception("'thresh_evolve_prob' param must be an int or float from 0 - 1")
         if thresh_evolve_prob < 0 or thresh_evolve_prob > 1:
             raise Exception("'thresh_evolve_prob' param must be an int or float from 0 - 1")
-        
-        if not multi_thresholding == True and not multi_thresholding == False and not multi_thresholding == 'True' and not multi_thresholding == 'False':
-            raise Exception("'multi_thresholding' param must be a boolean, i.e. True or False")
         
         if not isinstance(manual_bin_init, pd.DataFrame) and not manual_bin_init == None:
             raise Exception("'manual_bin_init' param must be either None or DataFame that includes columns for 'feature_list' and 'group_threshold' ")
@@ -217,18 +214,19 @@ class FIBERS(BaseEstimator, TransformerMixin):
         self.max_bin_init_size = max_bin_init_size
         self.fitness_metric = fitness_metric
         self.log_rank_weighting = log_rank_weighting
+        self.sharing_penalization = sharing_penalization
         self.censor_label = censor_label
         self.group_strata_min = group_strata_min
         self.penalty = penalty
-        self.group_thresh_list = group_thresh_list
-        self.min_thresh = min_thresh
-        self.max_thresh = max_thresh
+        self.group_thresh = group_thresh
+        self.min_thresh = min_thresh 
+        self.max_thresh = max_thresh 
         self.int_thresh = int_thresh
         self.thresh_evolve_prob = thresh_evolve_prob
-        self.multi_thresholding = multi_thresholding
         self.manual_bin_init = manual_bin_init
         self.covariates = covariates
         self.pop_clean = pop_clean
+        self.naive_survival_optimization = naive_survival_optimization              # new code
         self.report = report
         self.random_seed = random_seed
         self.verbose = verbose
@@ -334,15 +332,15 @@ class FIBERS(BaseEstimator, TransformerMixin):
         #Initialize bin population
         threshold_evolving = False #Adaptive thresholding - evolving thresholds is off by default for bin initialization 
         self.set = BIN_SET(self.manual_bin_init,self.df,self.feature_names,self.pop_size,
-                           self.min_bin_size,self.max_bin_init_size,self.group_thresh_list,self.min_thresh,self.max_thresh,
-                           self.int_thresh,self.multi_thresholding,self.outcome_type,self.fitness_metric,self.log_rank_weighting,self.group_strata_min,
-                           self.outcome_label,self.censor_label,threshold_evolving,self.penalty,self.iterations,0,self.residuals,self.covariates,random)
+                           self.min_bin_size,self.max_bin_init_size,self.group_thresh,self.min_thresh,self.max_thresh,
+                           self.int_thresh,self.outcome_type,self.fitness_metric,self.log_rank_weighting,self.group_strata_min,
+                           self.outcome_label,self.censor_label,threshold_evolving,self.penalty,self.iterations,0,self.residuals,self.covariates, self.naive_survival_optimization, random)
         #Global fitness update
+
         self.set.global_fitness_update(self.penalty) #Exerimental
 
         # Update feature tracking
         self.set.update_feature_tracking(self.feature_names)
-
         # Initialize training performance tracking
         self.performance_tracking(True,-1)
 
@@ -354,7 +352,7 @@ class FIBERS(BaseEstimator, TransformerMixin):
         #EVOLUTIONARY LEARNING ITERATIONS
         for iteration in tqdm(range(1, self.iterations+ 1)):
             # print('Iteration: '+str(iteration))
-            if self.group_thresh_list is None:
+            if self.group_thresh == None:
                 evolve = random.random()
                 if self.thresh_evolve_prob > evolve:
                     threshold_evolving = True
@@ -364,7 +362,7 @@ class FIBERS(BaseEstimator, TransformerMixin):
             #Occelating Mutation Rate
             mutation_prob =  (transform_value(iteration-1,cycle_length)*(self.max_mutation_prob-self.min_mutation_prob)/cycle_length)+self.min_mutation_prob
 
-            # GENETIC ALGORITHM
+            # GENETIC ALGORITHM 
             target_offspring_count = int(self.pop_size*self.new_gen) #Determine number of offspring to generate
             while len(self.set.offspring_pop) < target_offspring_count: #Generate offspring until we hit the target number
                 # Parent Selection
@@ -372,12 +370,14 @@ class FIBERS(BaseEstimator, TransformerMixin):
 
                 # Generate Offspring - clone, crossover, mutation, evaluation, add to population
                 self.set.generate_offspring(self.crossover_prob,mutation_prob,self.merge_prob,self.iterations,iteration,parent_list,self.feature_names,
-                                            threshold_evolving,self.multi_thresholding,self.min_bin_size,self.max_bin_size,self.max_bin_init_size,self.min_thresh,self.max_thresh,
+                                            threshold_evolving,self.min_bin_size,self.max_bin_size,self.max_bin_init_size,self.min_thresh,self.max_thresh,
                                             self.df,self.outcome_type,self.fitness_metric,self.log_rank_weighting,self.outcome_label,self.censor_label,self.int_thresh,
-                                            self.group_thresh_list,self.group_strata_min,self.penalty,self.residuals,self.covariates,random)
+                                            self.group_thresh,self.group_strata_min,self.penalty,self.residuals,self.covariates, self.naive_survival_optimization, random)
             # Add Offspring to Population
             self.set.add_offspring_into_pop(iteration)
-
+            # Apply sharing penalization if not none    
+            if self.sharing_penalization != None:
+                self.set.sharing_penalization(self.sharing_penalization)
             #Global fitness update
             self.set.global_fitness_update(self.penalty) #Exerimental
 
@@ -419,7 +419,6 @@ class FIBERS(BaseEstimator, TransformerMixin):
         print("Elapsed Time (sec): ", self.elapsed_time, "seconds")
 
         self.hasTrained = True
-        # Memory Cleanup
         self.df = None
         return self
 
@@ -512,7 +511,6 @@ class FIBERS(BaseEstimator, TransformerMixin):
 
             # Count
             bt_vote = [0]*len(temp_df) #votesum stored for each instance
-            mt_vote = [0]*len(temp_df) #votesum stored for each instance
             at_vote = [0]*len(temp_df) #votesum stored for each instance
 
             # Iterate through each row of the DataFrame
@@ -521,10 +519,8 @@ class FIBERS(BaseEstimator, TransformerMixin):
                 bin_count = 0
                 # Iterate through each value in the row
                 for value in row:
-                    if value <= self.set.bin_pop[bin_count].group_threshold_list[0]:
+                    if value <= self.set.bin_pop[bin_count].group_threshold:
                         bt_vote[row_count] += self.set.bin_pop[bin_count].pre_fitness
-                    elif value > self.set.bin_pop[bin_count].group_threshold_list[0] and value <= self.set.bin_pop[bin_count].group_threshold_list[1]:
-                        mt_vote[row_count] += self.set.bin_pop[bin_count].pre_fitness
                     else:
                         at_vote[row_count] += self.set.bin_pop[bin_count].pre_fitness
                     bin_count += 1
@@ -548,15 +544,15 @@ class FIBERS(BaseEstimator, TransformerMixin):
         #self.set.bin_pop = sorted(self.set.bin_pop, key=lambda x: x.fitness,reverse=True)
         top_bin = self.set.bin_pop[0]
         if initialize:
-            col_list = ['Iteration','Top Bin', 'Threshold(s)', 'Fitness', 'Pre-Fitness', 'Log-Rank Score', 'Log-Rank p-value', 'Bin Size', 'Group Ratio',
-                         'Count At/Below Threshold', 'Count Between Thresholds','Count Above Threshold','Birth Iteration','Residuals Score','Residuals p-value','Elapsed Time']
+            col_list = ['Iteration','Top Bin', 'Threshold', 'Fitness', 'Pre-Fitness', 'Log-Rank Score', 'Log-Rank p-value', 'Bin Size', 'Group Ratio', 'Count At/Below Threshold', 
+                        'Count Below Threshold','Birth Iteration','Residuals Score','Residuals p-value','Elapsed Time']
             self.perform_track_df = pd.DataFrame(columns=col_list)
             if self.verbose:
                 print(col_list)
 
-        tracking_values = [iteration,top_bin.feature_list,top_bin.group_threshold_list,top_bin.fitness,top_bin.pre_fitness,
-                           top_bin.log_rank_score,top_bin.log_rank_p_value,top_bin.bin_size,top_bin.group_strata_prop,top_bin.count_bt,top_bin.count_mt,
-                           top_bin.count_at,top_bin.birth_iteration,top_bin.residuals_score,top_bin.residuals_p_value,self.elapsed_time]
+        tracking_values = [iteration,top_bin.feature_list,top_bin.group_threshold,top_bin.fitness,top_bin.pre_fitness,top_bin.log_rank_score,top_bin.log_rank_p_value,top_bin.bin_size,
+                        top_bin.group_strata_prop,top_bin.count_bt,top_bin.count_at,top_bin.birth_iteration,top_bin.residuals_score,
+                        top_bin.residuals_p_value,self.elapsed_time]
         if self.verbose:
             print(tracking_values)
         # Add the row to the DataFrame
@@ -584,7 +580,7 @@ class FIBERS(BaseEstimator, TransformerMixin):
             print("Only one top performing bin found")
 
 
-    def get_bin_groups(self, x, y=None, bin_index=0):
+    def get_bin_groups(self, x, bin_index, y=None):
         """
         Function for FIBERS that returns the variables needed to construct survival curves for the two instance 
         groups defined by a given bin (low_outcome, high_outcome, low_censor, high_censor)
@@ -600,7 +596,7 @@ class FIBERS(BaseEstimator, TransformerMixin):
 
         :param bin_index: population index of the bin to return group information for
 
-        :return: low_outcome, mid_outcome, high_outcome, low_censor, mid_censor, and high_censor
+        :return: low_outcome, high_outcome, low_censor, and high_censor
         """   
         if not self.hasTrained:
             raise Exception("FIBERS must be fit first")
@@ -617,101 +613,17 @@ class FIBERS(BaseEstimator, TransformerMixin):
         # Create evaluation dataframe including bin sum feature with 
         bin_df = pd.concat([bin_df,df.loc[:,self.outcome_label],df.loc[:,self.censor_label]],axis=1)
 
-        num_thresh = len(self.set.bin_pop[bin_index].group_threshold_list)
-        if num_thresh == 2:
-            low_df = bin_df[bin_df['Bin_'+str(bin_index)] <= self.set.bin_pop[bin_index].group_threshold_list[0]]
-            mid_df = bin_df[(bin_df['Bin_'+str(bin_index)] > self.set.bin_pop[bin_index].group_threshold_list[0]) & (bin_df['Bin_'+str(bin_index)] <= self.set.bin_pop[bin_index].group_threshold_list[1])]
-            high_df = bin_df[bin_df['Bin_'+str(bin_index)] > self.set.bin_pop[bin_index].group_threshold_list[1]]
+        low_df = bin_df[bin_df['Bin_'+str(bin_index)] <= self.set.bin_pop[bin_index].group_threshold]
+        high_df = bin_df[bin_df['Bin_'+str(bin_index)] > self.set.bin_pop[bin_index].group_threshold]
 
-            low_outcome = low_df[self.outcome_label].to_list()
-            mid_outcome = mid_df[self.outcome_label].to_list()
-            high_outcome = high_df[self.outcome_label].to_list()
-            low_censor = low_df[self.censor_label].to_list()
-            mid_censor = mid_df[self.censor_label].to_list()
-            high_censor = high_df[self.censor_label].to_list()
-        else:
-            low_df = bin_df[bin_df['Bin_'+str(bin_index)] <= self.set.bin_pop[bin_index].group_threshold_list[0]]
-            high_df = bin_df[bin_df['Bin_'+str(bin_index)] > self.set.bin_pop[bin_index].group_threshold_list[0]]
-
-            low_outcome = low_df[self.outcome_label].to_list()
-            mid_outcome = None
-            high_outcome = high_df[self.outcome_label].to_list()
-            low_censor = low_df[self.censor_label].to_list()
-            mid_censor = None
-            high_censor =high_df[self.censor_label].to_list()
+        low_outcome = low_df[self.outcome_label].to_list()
+        high_outcome = high_df[self.outcome_label].to_list()
+        low_censor = low_df[self.censor_label].to_list()
+        high_censor =high_df[self.censor_label].to_list()
         df = None
-        return low_outcome, mid_outcome, high_outcome, low_censor, mid_censor, high_censor
+        return low_outcome, high_outcome, low_censor, high_censor
     
 
-    def get_cox_prop_hazard_unadjust(self,x, y=None, bin_index=0, use_bin_sums=False):
-        if not self.hasTrained:
-            raise Exception("FIBERS must be fit first")
-        
-        # PREPARE DATA ---------------------------------------
-        df = self.check_x_y(x, y)
-        df,self.feature_names = prepare_data(df,self.outcome_label,self.censor_label,self.covariates)
-
-        # Sum instance values across features specified in the bin
-        feature_sums = df.loc[:,self.feature_names][self.set.bin_pop[bin_index].feature_list].sum(axis=1)
-        bin_df = pd.DataFrame({'Bin_'+str(bin_index):feature_sums})
-
-        if not use_bin_sums:
-            # Transform bin feature values according to respective bin threshold
-            bin_df['Bin_'+str(bin_index)] = bin_df['Bin_'+str(bin_index)].apply(
-            lambda x: 0 if x <= self.set.bin_pop[bin_index].group_threshold_list[0] else 
-                      (1 if x <= self.set.bin_pop[bin_index].group_threshold_list[1] else 2))
-
-        bin_df = pd.concat([bin_df,df.loc[:,self.outcome_label],df.loc[:,self.censor_label]],axis=1)
-        summary = None
-        try:
-            summary = cox_prop_hazard(bin_df,self.outcome_label,self.censor_label)
-            self.set.bin_pop[bin_index].HR = summary['exp(coef)'].iloc[0]
-            self.set.bin_pop[bin_index].HR_CI = str(summary['exp(coef) lower 95%'].iloc[0])+'-'+str(summary['exp(coef) upper 95%'].iloc[0])
-            self.set.bin_pop[bin_index].HR_p_value = summary['p'].iloc[0]
-        except:
-            self.set.bin_pop[bin_index].HR = 0
-            self.set.bin_pop[bin_index].HR_CI = None
-            self.set.bin_pop[bin_index].HR_p_value = None
-
-        df = None
-        return summary
-
-
-    def get_cox_prop_hazard_adjusted(self,x, y=None, bin_index=0, use_bin_sums=False):
-        if not self.hasTrained:
-            raise Exception("FIBERS must be fit first")
-
-        # PREPARE DATA ---------------------------------------
-        df = self.check_x_y(x, y)
-        df,self.feature_names = prepare_data(df,self.outcome_label,self.censor_label,self.covariates)
-
-        # Sum instance values across features specified in the bin
-        feature_sums = df.loc[:,self.feature_names][self.set.bin_pop[bin_index].feature_list].sum(axis=1)
-        bin_df = pd.DataFrame({'Bin_'+str(bin_index):feature_sums})
-
-        if not use_bin_sums:
-            # Transform bin feature values according to respective bin threshold
-            bin_df['Bin_'+str(bin_index)] = bin_df['Bin_'+str(bin_index)].apply(
-            lambda x: 0 if x <= self.set.bin_pop[bin_index].group_threshold_list[0] else 
-                      (1 if x <= self.set.bin_pop[bin_index].group_threshold_list[1] else 2))
-
-        bin_df = pd.concat([bin_df,df.loc[:,self.outcome_label],df.loc[:,self.censor_label]],axis=1)
-        summary = None
-        try:
-            bin_df = pd.concat([bin_df,df.loc[:,self.covariates]],axis=1)
-            summary = cox_prop_hazard(bin_df,self.outcome_label,self.censor_label)
-            self.set.bin_pop[bin_index].adj_HR = summary['exp(coef)'].iloc[0]
-            self.set.bin_pop[bin_index].adj_HR_CI = str(summary['exp(coef) lower 95%'].iloc[0])+'-'+str(summary['exp(coef) upper 95%'].iloc[0])
-            self.set.bin_pop[bin_index].adj_HR_p_value = summary['p'].iloc[0]
-        except:
-            self.set.bin_pop[bin_index].adj_HR = 0
-            self.set.bin_pop[bin_index].adj_HR_CI = None
-            self.set.bin_pop[bin_index].adj_HR_p_value = None
-
-        df = None
-        return summary
-    
-    """
     def get_cox_prop_hazard(self,x, y=None, bin_index=0, use_bin_sums=False):
         if not self.hasTrained:
             raise Exception("FIBERS must be fit first")
@@ -728,35 +640,13 @@ class FIBERS(BaseEstimator, TransformerMixin):
             # Transform bin feature values according to respective bin threshold
             bin_df['Bin_'+str(bin_index)] = bin_df['Bin_'+str(bin_index)].apply(lambda x: 0 if x <= self.set.bin_pop[bin_index].group_threshold else 1)
 
-        bin_df = pd.concat([bin_df,df.loc[:,self.outcome_label],df.loc[:,self.censor_label]],axis=1)
-        try:
-            summary = cox_prop_hazard(bin_df,self.outcome_label,self.censor_label)
-            self.set.bin_pop[bin_index].HR = summary['exp(coef)'].iloc[0]
-            self.set.bin_pop[bin_index].HR_CI = str(summary['exp(coef) lower 95%'].iloc[0])+'-'+str(summary['exp(coef) upper 95%'].iloc[0])
-            self.set.bin_pop[bin_index].HR_p_value = summary['p'].iloc[0]
-        except:
-            self.set.bin_pop[bin_index].HR = 0
-            self.set.bin_pop[bin_index].HR_CI = None
-            self.set.bin_pop[bin_index].HR_p_value = None
-
-        if self.covariates != None:   
-            try:
-                bin_df = pd.concat([bin_df,df.loc[:,self.covariates]],axis=1)
-                summary = cox_prop_hazard(bin_df,self.outcome_label,self.censor_label)
-                self.set.bin_pop[bin_index].adj_HR = summary['exp(coef)'].iloc[0]
-                self.set.bin_pop[bin_index].adj_HR_CI = str(summary['exp(coef) lower 95%'].iloc[0])+'-'+str(summary['exp(coef) upper 95%'].iloc[0])
-                self.set.bin_pop[bin_index].adj_HR_p_value = summary['p'].iloc[0]
-            except:
-                self.set.bin_pop[bin_index].adj_HR = 0
-                self.set.bin_pop[bin_index].adj_HR_CI = None
-                self.set.bin_pop[bin_index].adj_HR_p_value = None
-
         # Create evaluation dataframe including bin sum feature with any covariates present
-        #bin_df = pd.concat([bin_df,df.loc[:,self.covariates],df.loc[:,self.outcome_label],df.loc[:,self.censor_label]],axis=1)
-        #summary = cox_prop_hazard(bin_df,self.outcome_label,self.censor_label)
+        bin_df = pd.concat([bin_df,df.loc[:,self.covariates],df.loc[:,self.outcome_label],df.loc[:,self.censor_label]],axis=1)
+
+        summary = cox_prop_hazard(bin_df,self.outcome_label,self.censor_label)
         df = None
         return summary
-    """
+
 
     def calculate_cox_prop_hazards(self,x, y=None, use_bin_sums=False):
         if not self.hasTrained:
@@ -774,9 +664,7 @@ class FIBERS(BaseEstimator, TransformerMixin):
 
             if not use_bin_sums:
                 # Transform bin feature values according to respective bin threshold
-                bin_df['Bin'] = bin_df['Bin'].apply(
-                lambda x: 0 if x <= bin.group_threshold_list[0] else 
-                          (1 if x <= bin.group_threshold_list[1] else 2))
+                bin_df['Bin'] = bin_df['Bin'].apply(lambda x: 0 if x <= bin.group_threshold else 1)
 
             # Create evaluation dataframe including bin sum feature, outcome, and censoring alone
             bin_df = pd.concat([bin_df,df.loc[:,self.outcome_label],df.loc[:,self.censor_label]],axis=1)
@@ -809,8 +697,10 @@ class FIBERS(BaseEstimator, TransformerMixin):
 
     def get_bin_report(self, bin_index):
         # Generates a bin summary report as a transposed dataframe
-        return self.set.bin_pop[bin_index].bin_report().T
+        return self.set.bin_pop[bin_index].bin_short_report().T
 
+    def get_group_composition(self, data, bin_index, predictive_features, threshold):
+        return self.set.bin_pop[bin_index].get_bin_composition(data, self.feature_names, predictive_features, threshold)
 
     def get_feature_tracking(self):
         return self.feature_names, self.set.feature_tracking
@@ -832,8 +722,9 @@ class FIBERS(BaseEstimator, TransformerMixin):
 
 
     def get_kaplan_meir(self,data,bin_index,show=True,save=False,output_folder=None,data_name=None):
-        low_outcome, mid_outcome, high_outcome, low_censor, mid_censor, high_censor = self.get_bin_groups(data, bin_index)
-        plot_kaplan_meir(low_outcome,low_censor,mid_outcome, mid_censor,high_outcome, high_censor,show=show,save=save,output_folder=output_folder,data_name=data_name)
+        low_outcome, high_outcome, low_censor, high_censor = self.get_bin_groups(data, bin_index)
+        print(low_outcome, high_outcome, low_censor, high_censor)
+        plot_kaplan_meir(low_outcome,low_censor,high_outcome, high_censor,show=show,save=save,output_folder=output_folder,data_name=data_name)
 
 
     def get_fitness_progress_plot(self,show=True,save=False,output_folder=None,data_name=None):
@@ -870,43 +761,252 @@ class FIBERS(BaseEstimator, TransformerMixin):
     def get_adj_HR_metric_product_plot(self,show=True,save=False,output_folder=None,data_name=None):
         plot_adj_HR_metric_product(self.residuals,self.set.bin_pop,show=show,save=save,output_folder=output_folder,data_name=data_name)
 
-    def get_bin_population_heatmap_plot(self,filtering=None,show=True,save=False,output_folder=None,data_name=None):
-        plot_bin_population_heatmap(list(self.get_pop()['feature_list']), self.feature_names, filtering=filtering, show=show,save=save,output_folder=output_folder,data_name=data_name)
+    def get_bin_population_heatmap_plot(self,show=True,save=False,output_folder=None,data_name=None):
+        plot_bin_population_heatmap(list(self.get_pop()['feature_list']), self.feature_names, show=show,save=save,output_folder=output_folder,data_name=data_name)
 
-    def get_custom_bin_population_heatmap_plot(self,group_names,legend_group_info,colors,max_bins,max_features,show=True,save=False,output_folder=None,data_name=None):
-        plot_custom_bin_population_heatmap(list(self.get_pop()['feature_list']), self.feature_names, group_names,legend_group_info,colors,max_bins,max_features,show=show,save=save,output_folder=output_folder,data_name=data_name)
+    def get_custom_bin_population_heatmap_plot(self,group_names,legend_group_info,color_features,colors,default_colors,max_bins,max_features,show=True,save=False,output_folder=None,data_name=None):
+        plot_custom_bin_population_heatmap(list(self.get_pop()['feature_list']), self.feature_names, group_names,legend_group_info,color_features,colors,default_colors,max_bins,max_features,show=show,save=save,output_folder=output_folder,data_name=data_name)
+    
+    def get_zoomed_fitness_pareto_plot(self, output_folder, data_name, show=True,save=False):
+        resolution = 500
+        self.set.pareto.plot_zoomed_pareto_landscape(resolution, self.set.get_min_area(), self.set.bin_pop,show=True,save=True,output_path=output_folder,data_name=data_name)
+    
+    def get_fitness_pareto_plot(self, output_folder, data_name, show=True,save=False):
+        resolution = 500
+        self.set.pareto.plot_pareto_landscape(resolution, self.set.get_min_area(), self.set.bin_pop,show=True,save=True,output_path=output_folder,data_name=data_name)
 
-    def save_run_params(self,filename):
-        with open(filename, 'w') as file:
-            file.write(f"outcome_label: {self.outcome_label}\n")
-            file.write(f"outcome_type: {self.outcome_type}\n")
-            file.write(f"iterations: {self.iterations}\n")
-            file.write(f"pop_size: {self.pop_size}\n")
-            file.write(f"tournament_prop: {self.tournament_prop}\n")
-            file.write(f"crossover_prob: {self.crossover_prob}\n")
-            file.write(f"min_mutation_prob: {self.min_mutation_prob}\n")
-            file.write(f"max_mutation_prob: {self.max_mutation_prob}\n")
-            file.write(f"merge_prob: {self.merge_prob}\n")
-            file.write(f"new_gen: {self.new_gen}\n")
-            file.write(f"elitism: {self.elitism}\n")
-            file.write(f"diversity_pressure: {self.diversity_pressure}\n")
-            file.write(f"min_bin_size: {self.min_bin_size}\n")
-            file.write(f"max_bin_size: {self.max_bin_size}\n")
-            file.write(f"max_bin_init_size: {self.max_bin_init_size}\n")
-            file.write(f"fitness_metric: {self.fitness_metric}\n")
-            file.write(f"log_rank_weighting: {self.log_rank_weighting}\n")
-            file.write(f"censor_label: {self.censor_label}\n")
-            file.write(f"group_strata_min: {self.group_strata_min}\n")
-            file.write(f"penalty: {self.penalty}\n")
-            file.write(f"low_thresh: {self.group_thresh_list[0]}\n")
-            file.write(f"high_thresh: {self.group_thresh_list[1]}\n")
-            file.write(f"min_thresh: {self.min_thresh}\n")
-            file.write(f"max_thresh: {self.max_thresh}\n")
-            file.write(f"int_thresh: {self.int_thresh}\n")
-            file.write(f"thresh_evolve_prob: {self.thresh_evolve_prob}\n")
-            file.write(f"manual_bin_init: {self.manual_bin_init}\n")
-            file.write(f"covariates: {self.covariates}\n")
-            file.write(f"pop_clean: {self.pop_clean}\n")
-            file.write(f"report: {self.report}\n")
-            file.write(f"random_seed: {self.random_seed}\n")
-            file.write(f"verbose: {self.verbose}\n")
+    def get_top_log_rank_score(self):
+        return self.set.bin_pop[0].log_rank_score
+    
+    def score(self):
+        return self.set.bin_pop[0].log_rank_score
+    
+    def get_pareto_front(self):
+        return self.set.get_pareto_front()
+    
+    def get_pareto_front_report(self):
+        pd.set_option('display.max_colwidth', None) # prevent truncation of dataframe
+        report_df = pd.DataFrame(columns=['Features in Bin:', 'Threshold:', 'Fitness','Pre-Fitness:', 'Log-Rank Score:', 'Low Risk Area:','Bin Size:', 'Group Ratio:', 
+                    'Count At/Below Threshold:', 'Count Above Threshold:'])
+        front = self.set.get_pareto_front()
+        i = 0
+        for bin in front:
+            report_df.loc[i] = [bin.feature_list, bin.group_threshold, bin.fitness, bin.pre_fitness, bin.log_rank_score, bin.low_risk_area,
+                                      bin.bin_size, bin.group_strata_prop, bin.count_bt, bin.count_at]
+            i = i + 1
+        return report_df
+    
+    def get_race_distribution_pie_chart(self, data, bin_index, predictive_features, threshold):
+        real_low_aa_ct, bin_low_aa_ct, real_high_aa_ct, bin_high_aa_ct, \
+        real_low_white_ct, bin_low_white_ct, real_high_white_ct, bin_high_white_ct, \
+        real_low_hispanic_ct, bin_low_hispanic_ct, real_high_hispanic_ct, bin_high_hispanic_ct, \
+        real_low_asian_ct, bin_low_asian_ct, real_high_asian_ct, bin_high_asian_ct, \
+        real_low_other_ct, bin_low_other_ct, real_high_other_ct, bin_high_other_ct, \
+        real_low_mdmr_ct, bin_low_mdmr_ct, real_high_mdmr_ct, bin_high_mdmr_ct, \
+        real_low_fdfr_ct, bin_low_fdfr_ct, real_high_fdfr_ct, bin_high_fdfr_ct, \
+        real_low_fdmr_ct, bin_low_fdmr_ct, real_high_fdmr_ct, bin_high_fdmr_ct, \
+        real_low_mdfr_ct, bin_low_mdfr_ct, real_high_mdfr_ct, bin_high_mdfr_ct = self.get_group_composition(data, bin_index, predictive_features, threshold)
+        # Set up the figure and axes
+        fig, axs = plt.subplots(2, 2, figsize=(20, 16))
+        fig.suptitle('Race and Gender Distribution - Real vs Binned', fontsize=16)
+
+        # Data for races
+        races = ['AA', 'White', 'Hispanic', 'Asian', 'Other']
+        
+        # High risk races
+        real_high_race_data = [real_high_aa_ct, real_high_white_ct, real_high_hispanic_ct, real_high_asian_ct, real_high_other_ct]
+        bin_high_race_data = [bin_high_aa_ct, bin_high_white_ct, bin_high_hispanic_ct, bin_high_asian_ct, bin_high_other_ct]
+        axs[0, 0].bar(np.arange(len(races)) - 0.2, real_high_race_data, 0.4, label='Real', color='blue', alpha=0.7)
+        axs[0, 0].bar(np.arange(len(races)) + 0.2, bin_high_race_data, 0.4, label='Binned', color='red', alpha=0.7)
+        axs[0, 0].set_xticks(np.arange(len(races)))
+        axs[0, 0].set_xticklabels(races)
+        axs[0, 0].set_title('High Risk - Races')
+        axs[0, 0].legend()
+        axs[0, 0].set_ylabel('Count')
+
+        # Low risk races
+        real_low_race_data = [real_low_aa_ct, real_low_white_ct, real_low_hispanic_ct, real_low_asian_ct, real_low_other_ct]
+        bin_low_race_data = [bin_low_aa_ct, bin_low_white_ct, bin_low_hispanic_ct, bin_low_asian_ct, bin_low_other_ct]
+        axs[0, 1].bar(np.arange(len(races)) - 0.2, real_low_race_data, 0.4, label='Real', color='blue', alpha=0.7)
+        axs[0, 1].bar(np.arange(len(races)) + 0.2, bin_low_race_data, 0.4, label='Binned', color='red', alpha=0.7)
+        axs[0, 1].set_xticks(np.arange(len(races)))
+        axs[0, 1].set_xticklabels(races)
+        axs[0, 1].set_title('Low Risk - Races')
+        axs[0, 1].legend()
+        axs[0, 1].set_ylabel('Count')
+
+        # Data for genders
+        genders = ['MDMR', 'FDFR', 'FDMR', 'MDFR']
+        
+        # High risk genders
+        real_high_gender_data = [real_high_mdmr_ct, real_high_fdfr_ct, real_high_fdmr_ct, real_high_mdfr_ct]
+        bin_high_gender_data = [bin_high_mdmr_ct, bin_high_fdfr_ct, bin_high_fdmr_ct, bin_high_mdfr_ct]
+        axs[1, 0].bar(np.arange(len(genders)) - 0.2, real_high_gender_data, 0.4, label='Real', color='blue', alpha=0.7)
+        axs[1, 0].bar(np.arange(len(genders)) + 0.2, bin_high_gender_data, 0.4, label='Binned', color='red', alpha=0.7)
+        axs[1, 0].set_xticks(np.arange(len(genders)))
+        axs[1, 0].set_xticklabels(genders)
+        axs[1, 0].set_title('High Risk - Genders')
+        axs[1, 0].legend()
+        axs[1, 0].set_ylabel('Count')
+
+        # Low risk genders
+        real_low_gender_data = [real_low_mdmr_ct, real_low_fdfr_ct, real_low_fdmr_ct, real_low_mdfr_ct]
+        bin_low_gender_data = [bin_low_mdmr_ct, bin_low_fdfr_ct, bin_low_fdmr_ct, bin_low_mdfr_ct]
+        axs[1, 1].bar(np.arange(len(genders)) - 0.2, real_low_gender_data, 0.4, label='Real', color='blue', alpha=0.7)
+        axs[1, 1].bar(np.arange(len(genders)) + 0.2, bin_low_gender_data, 0.4, label='Binned', color='red', alpha=0.7)
+        axs[1, 1].set_xticks(np.arange(len(genders)))
+        axs[1, 1].set_xticklabels(genders)
+        axs[1, 1].set_title('Low Risk - Genders')
+        axs[1, 1].legend()
+        axs[1, 1].set_ylabel('Count')
+
+        plt.tight_layout()
+        plt.show()
+        
+    def get_race_proportion(self, data, bin_index, predictive_features, threshold):
+        real_low_aa_ct, bin_low_aa_ct, real_high_aa_ct, bin_high_aa_ct, \
+        real_low_white_ct, bin_low_white_ct, real_high_white_ct, bin_high_white_ct, \
+        real_low_hispanic_ct, bin_low_hispanic_ct, real_high_hispanic_ct, bin_high_hispanic_ct, \
+        real_low_asian_ct, bin_low_asian_ct, real_high_asian_ct, bin_high_asian_ct, \
+        real_low_other_ct, bin_low_other_ct, real_high_other_ct, bin_high_other_ct, \
+        real_low_mdmr_ct, bin_low_mdmr_ct, real_high_mdmr_ct, bin_high_mdmr_ct, \
+        real_low_fdfr_ct, bin_low_fdfr_ct, real_high_fdfr_ct, bin_high_fdfr_ct, \
+        real_low_fdmr_ct, bin_low_fdmr_ct, real_high_fdmr_ct, bin_high_fdmr_ct, \
+        real_low_mdfr_ct, bin_low_mdfr_ct, real_high_mdfr_ct, bin_high_mdfr_ct = self.get_group_composition(data, bin_index, predictive_features, threshold)
+        data = {
+            "White": [bin_low_white_ct, real_low_white_ct],
+            "African American": [bin_low_aa_ct, real_low_aa_ct],
+            "Asian": [bin_low_asian_ct, real_low_asian_ct],
+            "Hispanic": [bin_low_hispanic_ct, real_low_hispanic_ct],
+            "Other": [bin_low_other_ct, real_low_other_ct]  # Example values, adjust as needed
+        }
+
+        # Define the index
+        index = ["Bin Proportions", "Expected Proportions"]
+        # Create the DataFrame
+        df = pd.DataFrame(data, index=index)
+        df_p= df.divide(df.sum(axis=1), axis=0)
+        pos_right = df_p.iloc[-1]
+        pos_left = df_p.iloc[0]
+        category = df_p.columns
+        #Get the position of the y values to the left. iloc gets the first row
+        abs_cumsum_left = df_p.iloc[0].values.T.cumsum() #accumulate the sum of pcts for the y axis labels
+        half_cumsum_left =df_p.iloc[0].divide(2).array #divide the isolated value by 2
+        cumsum_left = abs_cumsum_left-half_cumsum_left #substract halv the iso value to the cummulated
+        #to the right
+        abs_cumsum_right = df_p.iloc[-1].values.T.cumsum() #accumulate the sum of pcts for the y axis labels
+        half_cumsum_right =df_p.iloc[-1].divide(2).array #divide the isolated value by 2
+        cumsum_right = abs_cumsum_right-half_cumsum_right #substract halv the iso value to the cummulated
+        font= "Raleway"
+        def annotations(ax):
+            # Set source text
+            # Add in title and subtitle
+            ax.text(x=0.05, y=1.01, 
+                    s="FIBERS Binned Race Distribution",                                          #title of the plot
+                    fontname= font,
+                    transform=fig.transFigure,                                                                 #set the coordinate system to 0-1 to pass the postition
+                    color= "#000000",
+                    ha='left', fontsize=30, weight='bold', alpha=.8)
+            ax.text(x=0.05, y=-0.03, 
+                    s="Proportion Plot", #footnote
+                    transform=fig.transFigure, 
+                    color="#858585", 
+                    ha='left', fontsize=8, alpha=.7)
+        fig, ax = plt.subplots(figsize=(10,6), facecolor = "#F4F8FB")
+
+        ax.stackplot(df_p.index, 
+                    df_p.to_numpy().T, 
+                    labels = df_p.columns,   
+                    edgecolor = '#000000',
+                    linewidth= 1, )
+
+        #we remove all axis and place the y-axis text manually  
+        for (i, l, cat) in zip(cumsum_left,pos_left,  category):
+            ax.text(-0.1, i, cat, horizontalalignment='center', verticalalignment='center',color = "black", size = 10)
+            ax.text(-0.1, i-0.03, " (" +  '{:.0%}'.format(l)  +")", horizontalalignment='center', verticalalignment='center',color = "black", size = 8)
+
+            
+        #we remove all axis and place the y-axis text manually  
+        for (i, l, cat) in zip(cumsum_right,pos_right,  category):
+            ax.text(1.1, i, cat, horizontalalignment='center', verticalalignment='center',color = "black", size = 10)
+            ax.text(1.1, i-0.03, " (" +  '{:.0%}'.format(l)  +")", horizontalalignment='center', verticalalignment='center',color = "black", size = 10)
+
+        # hide some of the spines
+        ax.set_frame_on(False) 
+        annotations(ax)
+        plt.yticks([]) #remove y ticks and labels
+        ax.tick_params(axis='x',length=0) #remove x ticks but keep tick labels
+        plt.show()
+    def get_gender_proportion(self, data, bin_index, predictive_features, threshold):
+        real_low_aa_ct, bin_low_aa_ct, real_high_aa_ct, bin_high_aa_ct, \
+        real_low_white_ct, bin_low_white_ct, real_high_white_ct, bin_high_white_ct, \
+        real_low_hispanic_ct, bin_low_hispanic_ct, real_high_hispanic_ct, bin_high_hispanic_ct, \
+        real_low_asian_ct, bin_low_asian_ct, real_high_asian_ct, bin_high_asian_ct, \
+        real_low_other_ct, bin_low_other_ct, real_high_other_ct, bin_high_other_ct, \
+        real_low_mdmr_ct, bin_low_mdmr_ct, real_high_mdmr_ct, bin_high_mdmr_ct, \
+        real_low_fdfr_ct, bin_low_fdfr_ct, real_high_fdfr_ct, bin_high_fdfr_ct, \
+        real_low_fdmr_ct, bin_low_fdmr_ct, real_high_fdmr_ct, bin_high_fdmr_ct, \
+        real_low_mdfr_ct, bin_low_mdfr_ct, real_high_mdfr_ct, bin_high_mdfr_ct = self.get_group_composition(data, bin_index, predictive_features, threshold)
+        data = {
+            "MDMR": [bin_low_mdmr_ct, real_low_mdmr_ct],
+            "FDFR": [bin_low_fdfr_ct, real_low_fdfr_ct],
+            "FDMR": [bin_low_fdmr_ct, real_low_fdmr_ct],
+            "MDFR": [bin_low_mdfr_ct, real_low_mdfr_ct]
+        }
+
+        # Define the index
+        index = ["Bin Proportions", "Expected Proportions"]
+        # Create the DataFrame
+        df = pd.DataFrame(data, index=index)
+        df_p= df.divide(df.sum(axis=1), axis=0)
+        pos_right = df_p.iloc[-1]
+        pos_left = df_p.iloc[0]
+        category = df_p.columns
+        #Get the position of the y values to the left. iloc gets the first row
+        abs_cumsum_left = df_p.iloc[0].values.T.cumsum() #accumulate the sum of pcts for the y axis labels
+        half_cumsum_left =df_p.iloc[0].divide(2).array #divide the isolated value by 2
+        cumsum_left = abs_cumsum_left-half_cumsum_left #substract halv the iso value to the cummulated
+        #to the right
+        abs_cumsum_right = df_p.iloc[-1].values.T.cumsum() #accumulate the sum of pcts for the y axis labels
+        half_cumsum_right =df_p.iloc[-1].divide(2).array #divide the isolated value by 2
+        cumsum_right = abs_cumsum_right-half_cumsum_right #substract halv the iso value to the cummulated
+        font= "Raleway"
+        def annotations(ax):
+            # Set source text
+            # Add in title and subtitle
+            ax.text(x=0.05, y=1.01, 
+                    s="FIBERS Binned Gender Distribution",                                          #title of the plot
+                    fontname= font,
+                    transform=fig.transFigure,                                                                 #set the coordinate system to 0-1 to pass the postition
+                    color= "#000000",
+                    ha='left', fontsize=30, weight='bold', alpha=.8)
+            ax.text(x=0.05, y=-0.03, 
+                    s="Proportion Plot", #footnote
+                    transform=fig.transFigure, 
+                    color="#858585", 
+                    ha='left', fontsize=8, alpha=.7)
+        fig, ax = plt.subplots(figsize=(10,6), facecolor = "#F4F8FB")
+
+        ax.stackplot(df_p.index, 
+                    df_p.to_numpy().T, 
+                    labels = df_p.columns,   
+                    edgecolor = '#000000',
+                    linewidth= 1, )
+
+        #we remove all axis and place the y-axis text manually  
+        for (i, l, cat) in zip(cumsum_left,pos_left,  category):
+            ax.text(-0.1, i, cat, horizontalalignment='center', verticalalignment='center',color = "black", size = 10)
+            ax.text(-0.1, i-0.03, " (" +  '{:.0%}'.format(l)  +")", horizontalalignment='center', verticalalignment='center',color = "black", size = 8)
+
+            
+        #we remove all axis and place the y-axis text manually  
+        for (i, l, cat) in zip(cumsum_right,pos_right,  category):
+            ax.text(1.1, i, cat, horizontalalignment='center', verticalalignment='center',color = "black", size = 10)
+            ax.text(1.1, i-0.03, " (" +  '{:.0%}'.format(l)  +")", horizontalalignment='center', verticalalignment='center',color = "black", size = 10)
+
+        # hide some of the spines
+        ax.set_frame_on(False) 
+        annotations(ax)
+        plt.yticks([]) #remove y ticks and labels
+        ax.tick_params(axis='x',length=0) #remove x ticks but keep tick labels
+        plt.show()
