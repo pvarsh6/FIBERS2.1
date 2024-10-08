@@ -14,7 +14,6 @@ def prepare_data(df,outcome_label,censor_label,covariates):
     cols_to_drop = []
     for col in feature_names:
         if len(df[col].unique()) == 1:
-            print(df[col])
             cols_to_drop.append(col)
     df.drop(columns=cols_to_drop, inplace=True)
     feature_names = [item for item in feature_names if item not in cols_to_drop]
